@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: phishing-ai-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false          # You'll paste this in the Render dashboard
+      - key: FLASK_ENV
+        value: production
+    plan: free
