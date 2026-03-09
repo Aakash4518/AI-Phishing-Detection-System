@@ -47,11 +47,17 @@ def _fetch_html_and_features(url: str, domain: str) -> Dict[str, float]:
         # 1. num_external_links
         links = soup.find_all('a', href=True)
         external_count = 0
+        base_domain = domain.replace('www.', '') if domain.startswith('www.') else domain
         for link in links:
             href = link['href']
             parsed_href = urlparse(href)
-            if parsed_href.netloc and parsed_href.netloc != domain:
-                external_count += 1
+            if parsed_href.netloc:
+                link_domain = parsed_href.netloc.lower().split(':')[0]
+                link_base = link_domain.replace('www.', '') if link_domain.startswith('www.') else link_domain
+                
+                # It's an external link if the base domains don't match, and it's not a subdomain
+                if link_base != base_domain and not link_base.endswith('.' + base_domain):
+                    external_count += 1
         html_features['num_external_links'] = float(external_count)
         
         # 2. has_login_form
@@ -87,16 +93,25 @@ def extract_features(url: str) -> Dict[str, float]:
     domain_info = _extract_domain_info(normalized)
     domain = domain_info['domain']
     
+    # The model heavily penalizes root domains (e.g., google.com) compared to www.google.com.
+    # To prevent false positives, we normalize root domains (2 parts) to behave like www domains.
+    if not domain.startswith('www.') and len(domain.split('.')) == 2:
+        effective_domain = 'www.' + domain
+        effective_url = normalized.replace(domain, effective_domain, 1)
+    else:
+        effective_domain = domain
+        effective_url = normalized
+    
     # Core URL-based features
-    subdomains = domain.split('.') if domain else []
+    subdomains = effective_domain.split('.')
     
     features = {
-        'url_length': float(len(normalized)),
-        'num_dots': float(normalized.count('.')),
+        'url_length': float(len(effective_url)),
+        'num_dots': float(effective_url.count('.')),
         'has_ip': 1.0 if IP_REGEX.match(domain) or HEX_IP_REGEX.match(domain) else 0.0,
-        'has_at_symbol': 1.0 if '@' in normalized else 0.0,
+        'has_at_symbol': 1.0 if '@' in effective_url else 0.0,
         'num_subdomains': float(max(len(subdomains) - 2, 0)),
-        'is_https': 1.0 if normalized.startswith('https://') else 0.0,
+        'is_https': 1.0 if effective_url.startswith('https://') else 0.0,
     }
     
     # Enrichment from HTML
