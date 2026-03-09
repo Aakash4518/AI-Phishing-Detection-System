@@ -144,12 +144,24 @@ def extract_features(url: str) -> Dict[str, float]:
     # Since we already stripped www. during normalize_url, any remaining subdomain is an actual subdomain
     subdomains = [s for s in ext.subdomain.split('.') if s] if ext.subdomain else []
     
+    # ML Model Hack: To prevent penalizing safe root domains without 'www', we artificially 
+    # add the 'www' length and dots back ONLY for feature calculation. 
+    # This guarantees 'google.com' and 'www.google.com' output identical, safe features.
+    if not ext.subdomain:
+        feature_url_len = len(normalized) + 4
+        feature_dots = normalized.count('.') + 1
+        feature_subdomains = 1.0 # Treat 'www' as the baseline subdomain
+    else:
+        feature_url_len = len(normalized)
+        feature_dots = normalized.count('.')
+        feature_subdomains = len(subdomains)
+        
     features = {
-        'url_length': float(len(normalized)),
-        'num_dots': float(normalized.count('.')),
+        'url_length': float(feature_url_len),
+        'num_dots': float(feature_dots),
         'has_ip': 1.0 if IP_REGEX.match(domain) or HEX_IP_REGEX.match(domain) else 0.0,
         'has_at_symbol': 1.0 if '@' in normalized else 0.0,
-        'num_subdomains': float(len(subdomains)), # Accurately count actual subdomains only
+        'num_subdomains': float(feature_subdomains), 
         'is_https': 1.0 if normalized.startswith('https://') else 0.0,
     }
     
