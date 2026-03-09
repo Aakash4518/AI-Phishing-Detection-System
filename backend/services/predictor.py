@@ -85,6 +85,35 @@ class PredictorService:
             risk = self._risk_bucket(confidence, phishing_pred=prediction == 1)
             top_features = self._top_feature_impacts(feature_frame)
             triggered = rule_flags(url, extracted)
+            
+            # --- HEURISTIC ENGINE OVERRIDE ---
+            # Many phishing sites (like seahami.com.ng) block scraping bots (403 Forbidden) or are empty,
+            # resulting in exactly 0.0 for all HTML-based features. Legitimate brands (Google, Amazon) 
+            # always return rich HTML. We override the ML model if the site is dodging scans.
+            html_is_empty = (
+                extracted.get('num_external_links', 0) == 0 and 
+                extracted.get('has_login_form', 0) == 0 and 
+                extracted.get('text_keywords_score', 0) == 0 and
+                extracted.get('has_suspicious_scripts', 0) == 0
+            )
+            
+            suspicious_tlds = ['.xyz', '.top', '.pw', '.tk', '.ml', '.ga', '.cf', '.gq', '.ng', '.com.ng', '.buzz', '.info', '.online', '.site']
+            from urllib.parse import urlparse
+            domain_name = urlparse(url).netloc.lower()
+            has_suspicious_tld = any(domain_name.endswith(tld) for tld in suspicious_tlds)
+            
+            from utils.feature_extraction import SUSPICIOUS_KEYWORDS
+            has_domain_keyword = any(kw in domain_name for kw in SUSPICIOUS_KEYWORDS)
+
+            if html_is_empty and (has_suspicious_tld or has_domain_keyword or extracted.get('num_dots', 0) >= 3 or extracted.get('num_subdomains', 0) >= 2):
+                prediction = 1
+                confidence = max(confidence, 0.96)
+                risk = 'High'
+                override_msg = 'Anti-bot evasion detected: Suspected phishing domain blocking security scanners.'
+                if override_msg not in triggered:
+                    triggered.append(override_msg)
+            # --- END HEURISTIC OVERRIDE ---
+
             narrative = explain_prediction(url, risk, triggered, top_features)
 
             label = 'phishing' if prediction == 1 else ('suspicious' if risk == 'Suspicious' else 'safe')
