@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
+import tldextract
 
 try:
     import whois
@@ -20,9 +21,44 @@ IP_REGEX = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')
 HEX_IP_REGEX = re.compile(r'^0x[0-9a-fA-F]+$')
 
 def normalize_url(url: str) -> str:
+    url = url.strip()
     if not url.startswith(('http://', 'https://')):
-        return f'https://{url}'
-    return url
+        url = f'https://{url}'
+    
+    # Extract components to robustly strip 'www.'
+    # tldextract will correctly identify subdomains, domains, and suffixes
+    ext = tldextract.extract(url)
+    
+    # Safely reconstruct domain without 'www'
+    subdomain = ext.subdomain
+    if subdomain.startswith('www.'):
+        subdomain = subdomain[4:]
+    elif subdomain == 'www':
+        subdomain = ''
+        
+    # If the URL is just an IP address, ext.domain will be the IP and ext.suffix will be empty
+    if IP_REGEX.match(ext.domain) or HEX_IP_REGEX.match(ext.domain):
+        domain = ext.domain
+    else:
+        if subdomain:
+            domain = f"{subdomain}.{ext.domain}.{ext.suffix}"
+        else:
+            domain = f"{ext.domain}.{ext.suffix}"
+        
+    parsed = urlparse(url)
+    
+    # Rebuild URL
+    netloc = domain
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+        
+    normalized = f"{parsed.scheme}://{netloc}{parsed.path}"
+    if parsed.query:
+        normalized += f"?{parsed.query}"
+    if parsed.fragment:
+        normalized += f"#{parsed.fragment}"
+        
+    return normalized
 
 def _extract_domain_info(url: str) -> Dict[str, str]:
     parsed = urlparse(url)
@@ -44,19 +80,22 @@ def _fetch_html_and_features(url: str, domain: str) -> Dict[str, float]:
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
+        # We need the registered domain (e.g., google.com) to compare external links robustly
+        source_ext = tldextract.extract(url)
+        source_registered_domain = f"{source_ext.domain}.{source_ext.suffix}"
+        
         # 1. num_external_links
         links = soup.find_all('a', href=True)
         external_count = 0
-        base_domain = domain.replace('www.', '') if domain.startswith('www.') else domain
         for link in links:
             href = link['href']
             parsed_href = urlparse(href)
             if parsed_href.netloc:
-                link_domain = parsed_href.netloc.lower().split(':')[0]
-                link_base = link_domain.replace('www.', '') if link_domain.startswith('www.') else link_domain
+                link_ext = tldextract.extract(href)
+                link_registered_domain = f"{link_ext.domain}.{link_ext.suffix}"
                 
-                # It's an external link if the base domains don't match, and it's not a subdomain
-                if link_base != base_domain and not link_base.endswith('.' + base_domain):
+                # It's an external link if the registered root domains don't match
+                if link_registered_domain != source_registered_domain:
                     external_count += 1
         html_features['num_external_links'] = float(external_count)
         
@@ -74,8 +113,12 @@ def _fetch_html_and_features(url: str, domain: str) -> Dict[str, float]:
             src = script.get('src', '')
             if any(p in content for p in susp_patterns):
                 suspicious_count += 1
-            if src and urlparse(src).netloc and urlparse(src).netloc != domain:
-                suspicious_count += 0.5 # Weight external scripts less
+            if src:
+                src_ext = tldextract.extract(src)
+                src_registered_domain = f"{src_ext.domain}.{src_ext.suffix}"
+                # External scripts increase suspicion score but are weighted less heavily
+                if src_registered_domain and src_registered_domain != source_registered_domain:
+                    suspicious_count += 0.5 
         html_features['has_suspicious_scripts'] = float(min(suspicious_count, 10))
         
         # 4. text_keywords_score
@@ -89,36 +132,31 @@ def _fetch_html_and_features(url: str, domain: str) -> Dict[str, float]:
     return html_features
 
 def extract_features(url: str) -> Dict[str, float]:
+    # Normalizing strips www. and ensures protocol
     normalized = normalize_url(url)
     domain_info = _extract_domain_info(normalized)
     domain = domain_info['domain']
     
-    # The model heavily penalizes root domains (e.g., google.com) compared to www.google.com.
-    # To prevent false positives, we normalize root domains (2 parts) to behave like www domains.
-    if not domain.startswith('www.') and len(domain.split('.')) == 2:
-        effective_domain = 'www.' + domain
-        effective_url = normalized.replace(domain, effective_domain, 1)
-    else:
-        effective_domain = domain
-        effective_url = normalized
+    # Tldextract parsing on the normalized URL
+    ext = tldextract.extract(normalized)
     
     # Core URL-based features
-    subdomains = effective_domain.split('.')
+    # Since we already stripped www. during normalize_url, any remaining subdomain is an actual subdomain
+    subdomains = [s for s in ext.subdomain.split('.') if s] if ext.subdomain else []
     
     features = {
-        'url_length': float(len(effective_url)),
-        'num_dots': float(effective_url.count('.')),
+        'url_length': float(len(normalized)),
+        'num_dots': float(normalized.count('.')),
         'has_ip': 1.0 if IP_REGEX.match(domain) or HEX_IP_REGEX.match(domain) else 0.0,
-        'has_at_symbol': 1.0 if '@' in effective_url else 0.0,
-        'num_subdomains': float(max(len(subdomains) - 2, 0)),
-        'is_https': 1.0 if effective_url.startswith('https://') else 0.0,
+        'has_at_symbol': 1.0 if '@' in normalized else 0.0,
+        'num_subdomains': float(len(subdomains)), # Accurately count actual subdomains only
+        'is_https': 1.0 if normalized.startswith('https://') else 0.0,
     }
     
     # Enrichment from HTML
     html_info = _fetch_html_and_features(normalized, domain)
     features.update(html_info)
     
-    # Ensure order matches prediction expectations (though PredictorService handles mapping)
     return features
 
 def rule_flags(url: str, features: Dict[str, float]) -> List[str]:

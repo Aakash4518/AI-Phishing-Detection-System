@@ -9,11 +9,14 @@ def explain_prediction(url: str, risk_level: str, triggered_flags: List[str], to
         'Report the URL to your IT/security team if received by email or chat.',
     ]
 
+    # Filter out top features that have a value of 0 since they can be misleading (e.g., num_subdomains=0.0 means safe, not risky)
+    meaningful_features = [item for item in top_features if item['value'] > 0]
+    
     top_feature_text = ', '.join(
-        f"{item['feature']}={item['value']}" for item in top_features[:3]
-    ) or 'No dominant model features were available.'
+        f"{item['feature'].replace('_', ' ')}={item['value']}" for item in meaningful_features[:3]
+    ) if meaningful_features else 'No dominant high-risk signals detected visually.'
 
-    reasons = '; '.join(triggered_flags[:4]) if triggered_flags else 'Model confidence is based on learned URL patterns.'
+    reasons = '; '.join(triggered_flags[:4]) if triggered_flags else 'Model confidence based on domain metrics.'
 
     # OpenAI integration can be enabled later with OPENAI_API_KEY.
     # This keeps the response deterministic when no key is configured.
