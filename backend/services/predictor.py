@@ -112,6 +112,24 @@ class PredictorService:
                 override_msg = 'Anti-bot evasion detected: Suspected phishing domain blocking security scanners.'
                 if override_msg not in triggered:
                     triggered.append(override_msg)
+            
+            # 2. High-Risk HTML Content Override
+            # If the ML model mistakenly trusts the site due to HTTPS or short length, but the actual HTML
+            # page has a toxic combination of login forms, suspicious scripts, and phishing keywords.
+            high_risk_signals = sum([
+                1 if extracted.get('has_login_form', 0) > 0 else 0,
+                1 if extracted.get('text_keywords_score', 0) >= 3 else 0,
+                1 if extracted.get('has_suspicious_scripts', 0) > 0 else 0,
+                1 if extracted.get('num_external_links', 0) >= 15 else 0
+            ])
+            
+            if high_risk_signals >= 2 and prediction == 0:
+                prediction = 1
+                confidence = max(confidence, 0.92)
+                risk = 'High'
+                override_msg = 'High-risk content detected: Multiple phishing/credential-harvesting signals identified in page content.'
+                if override_msg not in triggered:
+                    triggered.append(override_msg)
             # --- END HEURISTIC OVERRIDE ---
 
             narrative = explain_prediction(url, risk, triggered, top_features)

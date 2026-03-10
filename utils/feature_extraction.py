@@ -163,6 +163,12 @@ def extract_features(url: str) -> Dict[str, float]:
         'has_at_symbol': 1.0 if '@' in normalized else 0.0,
         'num_subdomains': float(feature_subdomains), 
         'is_https': 1.0 if normalized.startswith('https://') else 0.0,
+        
+        # New robust string features for higher precision
+        'url_entropy': float(-sum(p * math.log2(p) for p in (normalized.count(c) / len(normalized) for c in set(normalized)))),
+        'num_hyphens': float(normalized.count('-')),
+        'path_length': float(len(urlparse(normalized).path)),
+        'has_suspicious_tld': 1.0 if ext.suffix and any(ext.suffix.endswith(t) for t in ['xyz', 'top', 'pw', 'tk', 'ml', 'ga', 'cf', 'gq', 'ng', 'buzz', 'info', 'online', 'site']) else 0.0,
     }
     
     # Enrichment from HTML
